@@ -7,8 +7,16 @@ const BOARD_SIZE = 15;
 const GAME_TICK = 500;
 const PLAYER_START_POS = [2,-1,-1];
 const DEBUG = false;
-let PLAYER_NAME = `Player ${Math.floor(Math.random() * 99) + 1}`;
 
+const GAME_LENGTH = 90;
+let TimerInterval;
+const TimeSound = new Howl({
+    src: ['../audio/steamwhistle_0.wav']
+});
+
+const ScoreText = document.getElementById("scoreText");
+const NameInputBox = document.getElementById("playerName");
+let PLAYER_NAME = `Player ${Math.floor(Math.random() * 99) + 1}`;
 
 let stage = new PIXI.Container();
 
@@ -17,6 +25,7 @@ let ship;
 let board;
 let orbs = {};
 let score = 0;
+let highScore = 0;
 
 let renderer = PIXI.autoDetectRenderer({height: SCREEN_HEIGHT, width: SCREEN_WIDTH, transparent: true, resolution: 1});
 document.getElementById('display').appendChild(renderer.view);
@@ -43,7 +52,6 @@ class Point {
  * Hex class logic came from RedBlobGames.com
  */
 class Hex {
-    coords;
     constructor(q, r, s) {
         this.q = q;
         this.r = r;
@@ -147,13 +155,11 @@ Hex.diagonals = {
 };
 
 class Tile {
-    _hex;
-    _graphic = new PIXI.Sprite(
-        PIXI.loader.resources["../img/hextile.png"].texture
-    );
-    _passable = true;
-
     constructor(x,y,z, offsetX, offsetY) {
+        this._graphic = new PIXI.Sprite(
+            PIXI.loader.resources["../img/hextile.png"].texture
+        );
+        this._passable = true;
         this._hex = new Hex(x,y,z);
         this.draw(stage, offsetX, offsetY)
     }
@@ -179,9 +185,6 @@ class Tile {
 }
 
 class Board {
-    _boardSize;
-    _tilemap = {};
-
     move(unit, direction, ticks) {
         if (unit._state === UnitStatus.MOVING || unit._lerp._active)
             return;
@@ -240,6 +243,7 @@ class Board {
 
     constructor(size) {
         this._boardSize = size;
+        this._tilemap = {};
 
         let tile = new Tile(0,0,0, 0, 0);
         this._tilemap[tile.getCoords()] = tile;
@@ -295,15 +299,12 @@ class Board {
 }
 
 class Ship {
-    _graphic;
-    _offsetX = 0;
-    _offsetY = 0;
-    _center;
-    _shipRadius = 1;
-    _tiles = [];
-
     constructor(tile, board) {
         this._graphic = new PIXI.Sprite(PIXI.loader.resources["ship"].texture);
+        this._offsetX = 0;
+        this._offsetY = 0;
+        this._shipRadius = 1;
+        this._tiles = [];
         this._graphic.anchor.set(0.5, 0.5);
         this._graphic.scale.set(0.3, 0.3);
         this._graphic.position.copyFrom(tile._graphic.position);
@@ -335,20 +336,15 @@ class Ship {
 
 class Orb {
     // 59 x 58 sprite
-    _state = UnitStatus.READY;
-    _movePath = [];
-    _lerp = new SpriteLerp();
-    _texture = PIXI.loader.resources["orb"].texture;
-    _graphic;
-    _anim;
-    _location;
-    _offsetX;
-    _offsetY;
-    _scoreSound = new Howl({
-        src: ['../audio/shimmer_1.flac']
-    });
-
     constructor(tile, id) {
+        this._state = UnitStatus.READY;
+        this._movePath = [];
+        this._lerp = new SpriteLerp();
+        this._texture = PIXI.loader.resources["orb"].texture;
+        this._scoreSound = new Howl({
+            src: ['../audio/shimmer_1.flac']
+        });
+
         this._offsetX = -tile._graphic.width/4;
         this._offsetY = -tile._graphic.width/3;
         let rect = new PIXI.Rectangle(0,64,32,32);
@@ -412,6 +408,7 @@ class Orb {
         score += 1;
         this.resetPos();
         this._state = UnitStatus.READY;
+        ScoreText.innerHTML = `Score: ${score}<br>High Score: ${highScore}`;
     }
 
     animate() {
@@ -451,20 +448,14 @@ UnitStatus = {
 };
 
 class Player {
-    _state;
-    _lerp = new SpriteLerp();
-    _texture = PIXI.loader.resources["player"].texture;
-    _graphic;
-    _anim;
-    _location;
-    _offsetX;
-    _offsetY;
-    _isPulling;
-
     constructor(tile) {
+        this._isPulling = false;
+        this._lerp = new SpriteLerp();
+        this._texture = PIXI.loader.resources["player"].texture;
         this._state = UnitStatus.READY;
         this._offsetX = -tile._graphic.width/4;
         this._offsetY = -tile._graphic.height/3;
+        this._playerName = null;
 
         let rect = new PIXI.Rectangle(0,96,32,32);
         this._texture.frame = rect;
@@ -524,7 +515,7 @@ class Player {
         this.changeState(UnitStatus.READY);
     }
 
-    changeState = state => {
+    changeState(state) {
         switch(state) {
             case UnitStatus.MOVING:
                 console.log("Player is moving...");
@@ -552,9 +543,11 @@ class Player {
     };
 
     drawName() {
-        let playerName = new PIXI.Text(PLAYER_NAME, {font: "24px Arial", fill: "yellow", align: "center"});
-        playerName.anchor.set(0.5);
-        this._graphic.addChild(playerName);
+        if (this._playerName !== null)
+            this._graphic.removeChild(this._playerName);
+        this._playerName = new PIXI.Text(PLAYER_NAME, {font: "24px Arial", fill: "yellow", align: "center"});
+        this._playerName.anchor.set(0.5);
+        this._graphic.addChild(this._playerName);
     }
 
     animate() {
@@ -577,11 +570,9 @@ class Player {
 }
 
 class SpriteLerp {
-    _active = false;
-    _startActionTime;
-    _endActionTime;
-    _from;
-    _to;
+    constructor() {
+        this._active = false;
+    }
 
     start(a, b, ticks) {
         this._active = true;
@@ -634,8 +625,12 @@ function setup() {
 
     generateOrbs(5);
 
+    document.getElementById("nameChanger").addEventListener("submit", updateName, false);
+
     gameLoop();
     animationLoop();
+
+    resetTimer();
 }
 
 function generateOrbs(numOrbs) {
@@ -675,8 +670,10 @@ function animationLoop() {
 }
 
 window.addEventListener("keydown", function(event) {
-   event.preventDefault();
-   userInput(event.key);
+    if (NameInputBox !== document.activeElement) {
+        event.preventDefault();
+        userInput(event.key);
+    }
 });
 
 function userInput(key) {
@@ -699,4 +696,46 @@ function updatePointer() {
     }
     if (!hoverObject)
         pointer.cursor = "auto";
+}
+
+function updateName(e) {
+    e.preventDefault();
+    PLAYER_NAME = NameInputBox.value;
+    player.drawName();
+    NameInputBox.blur();
+}
+
+function resetTimer() {
+    let CountdownTimer = new Date();
+    CountdownTimer.setSeconds(CountdownTimer.getSeconds() + GAME_LENGTH);
+
+    TimerInterval = setInterval(function() {
+        // Get today's date and time
+        const now = new Date().getTime();
+
+        // Find the distance between now and the count down date
+        const distance = CountdownTimer - now;
+
+        // If the count down is finished, write some text
+        if (distance < 0) {
+            clearInterval(TimerInterval);
+            highScore = (score > highScore) ? score : highScore;
+            score = 0;
+            TimeSound.play();
+            for (o in orbs) {
+                orbs[o].resetPos();
+            }
+            resetTimer();
+            document.getElementById("timer").innerText = "1:30";
+            return;
+        }
+
+        // Time calculations for minutes and seconds
+        const minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
+        const seconds = Math.floor((distance % (1000 * 60)) / 1000);
+
+        // Display the result in the element with id="demo"
+        document.getElementById("timer").innerHTML = `${minutes}:${('0' + seconds).slice(-2)}`;
+
+    }, 1000);
 }
