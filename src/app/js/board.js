@@ -721,6 +721,7 @@ function resetTimer() {
             clearInterval(TimerInterval);
             highScore = (score > highScore) ? score : highScore;
             score = 0;
+            ScoreText.innerHTML = `Score: 0<br>High Score: ${highScore}`;
             TimeSound.play();
             for (o in orbs) {
                 orbs[o].resetPos();
