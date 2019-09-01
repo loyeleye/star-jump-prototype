@@ -13,12 +13,16 @@ let TimerInterval;
 const TimeSound = new Howl({
     src: ['../audio/steamwhistle_0.wav']
 });
+const scoreSound = new Howl({
+    src: ['../audio/shimmer_1.flac']
+});
 
 const ScoreText = document.getElementById("scoreText");
 const NameInputBox = document.getElementById("playerName");
 let PLAYER_NAME = `Player ${Math.floor(Math.random() * 99) + 1}`;
 
 let stage = new PIXI.Container();
+let mouseMovement = false;
 
 let player;
 let ship;
@@ -154,17 +158,20 @@ Hex.diagonals = {
     'we': new Hex(1, 1, -2)
 };
 
-class Tile {
+class Tile extends Hex {
     constructor(x,y,z, offsetX, offsetY) {
+        super(x,y,z);
+        this.x = x;
+        this.y = y;
+        this.z = z;
         this._graphic = new PIXI.Sprite(
             PIXI.loader.resources["../img/hextile.png"].texture
         );
         this._passable = true;
-        this._hex = new Hex(x,y,z);
         this.draw(stage, offsetX, offsetY)
     }
     getCoords() {
-        return `${this._hex.coords[0]},${this._hex.coords[1]},${this._hex.coords[2]}`;
+        return `${this.coords[0]},${this.coords[1]},${this.coords[2]}`;
     }
     getPixelCoords() {
         return new Point(this._graphic.x, this._graphic.y);
@@ -182,63 +189,27 @@ class Tile {
             this._graphic.addChild(coordsText);
         }
     }
+    neighbor(direction) {
+        return super.neighbor(direction).subtract(this);
+    }
+
+    linedraw(b) {
+        const hexPath = super.linedraw(b);
+        let tilePath = [this];
+        for (let h in hexPath) {
+            const toHex = hexPath[h];
+            const fromTile = tilePath[-1];
+            const dir = toHex.subtract(tilePath[-1]);
+            const toTile = fromTile.neighbor(dir);
+            tilePath.push(toTile);
+        }
+        return tilePath;
+    }
 }
 
 class Board {
-    move(unit, direction, ticks) {
-        if (unit._state === UnitStatus.MOVING || unit._lerp._active)
-            return;
-        if (unit._state === UnitStatus.PULLING)
-            unit.cancelPull();
-
-        let hex = unit._location._hex;
-        let neighbor = hex.neighbor(direction);
-        let dest = this.getTileFromHex(neighbor);
-        if (dest._passable === false) {
-            return;
-        }
-        unit.changeState(UnitStatus.MOVING);
-        let from = new Point(unit._graphic.x, unit._graphic.y);
-        let to = new Point(dest._graphic.x + unit._offsetX,
-            dest._graphic.y + unit._offsetY);
-        unit.turn(direction);
-        unit._lerp.start(from, to, ticks);
-        unit._location = dest;
-    }
-
-    pull(unit, obj) {
-        if (unit._state === UnitStatus.MOVING || unit._lerp._active)
-            return;
-        if (unit._state === UnitStatus.PULLING)
-            unit.cancelPull();
-
-        let fromHex = obj._location._hex;
-        let toHex = unit._location._hex;
-        let hexPath = fromHex.linedraw(toHex);
-
-        // Ignoring the start and end points, is there a path?
-        if (hexPath.length - 2 <= 0)
-            return;
-
-        let hexdir = hexPath[hexPath.length - 2].subtract(hexPath[hexPath.length - 1]);
-        let dir = Hex.directionsInverted[`${hexdir.q},${hexdir.r},${hexdir.s}`];
-        unit.turn(dir);
-
-        // Get all tiles for the corresponding hexes
-        let tilePath = [];
-        for (let i = 1; i < hexPath.length - 1; i++) {
-            tilePath.push(this.getTileFromHex(hexPath[i]));
-        }
-        obj.pull(tilePath);
-        unit.pull(obj);
-    }
-
     getTile(x, y, z) {
         return this._tilemap[`${x},${y},${z}`];
-    }
-
-    getTileFromHex(hex) {
-        return this.getTile(hex.coords[0], hex.coords[1], hex.coords[2]);
     }
 
     constructor(size) {
@@ -322,8 +293,7 @@ class Ship {
             this._tiles.push(tile);
         if (radius > 0) {
             for (let key in Hex.directions) {
-                let nHex = tile._hex.neighbor(key);
-                let dest = b.getTileFromHex(nHex);
+                let dest = tile.neighbor(key);
                 this.storeTilesUnderShip(b, dest, radius - 1);
             }
         }
@@ -334,32 +304,51 @@ class Ship {
     }
 }
 
-class Orb {
-    // 59 x 58 sprite
-    constructor(tile, id) {
-        this._state = UnitStatus.READY;
-        this._movePath = [];
+class Unit {
+    constructor(tile, id, offsetX, offsetY) {
         this._lerp = new SpriteLerp();
-        this._texture = PIXI.loader.resources["orb"].texture;
-        this._scoreSound = new Howl({
-            src: ['../audio/shimmer_1.flac']
-        });
-
-        this._offsetX = -tile._graphic.width/4;
-        this._offsetY = -tile._graphic.width/3;
-        let rect = new PIXI.Rectangle(0,64,32,32);
-        this._texture.frame = rect;
-        this._graphic = new PIXI.Sprite(this._texture);
-
-        this._anim = setInterval(function() {
-            rect.x += 32;
-            if (rect.x >= 32 * 3) rect.x = 0;
-            orbs[id]._graphic.texture.frame = rect;
-        }, 50);
-
-        stage.addChild(this._graphic);
+        this._location = tile;
+        this._state = Unit.Status.READY;
+        this._offsetX = offsetX;
+        this._offsetY = offsetY;
+        this._texture = null;
+        this._graphic = null;
+        this.setGraphic(id);
         this.setPos(tile);
-        orbs[id] = this;
+    }
+
+    setGraphic(img) {
+        throw new Error("ERROR: Please set this._graphic and this._texture in the setGraphic() method!")
+    }
+
+    cancelPull() {
+        throw new Error("ERROR: Calling cancel pull from abstract class. Please instantiate it from inherited class");
+    }
+
+    turn(direction) {}
+
+    changeState(state) {
+        this._state = state;
+    }
+
+    move(direction, ticks) {
+        if (this._state === Unit.Status.MOVING || this._lerp._active)
+            return;
+        if (this._state === Unit.Status.PULLING)
+            this.cancelPull();
+
+        let onTile = this._location;
+        let neighbor = onTile.neighbor(direction);
+        if (neighbor._passable === false) {
+            return;
+        }
+        this.changeState(Unit.Status.MOVING);
+        let from = new Point(this._graphic.x, this._graphic.y);
+        let to = new Point(neighbor._graphic.x + this._offsetX,
+            neighbor._graphic.y + this._offsetY);
+        this.turn(direction);
+        this._lerp.start(from, to, ticks);
+        this._location = neighbor;
     }
 
     setPos(tile) {
@@ -369,14 +358,55 @@ class Orb {
         this._location = tile;
     }
 
+    animate() {
+        if (this._lerp._active) {
+            let at = this._lerp.update();
+            this._graphic.position.x = at.x;
+            this._graphic.position.y = at.y;
+        } else {
+            this.changeState(Unit.Status.READY);
+        }
+    }
+}
+
+Unit.Status = {
+    MOVING: 50,
+    PULLING: 30,
+    PULLED: 25,
+    READY: 1
+};
+
+class Orb extends Unit {
+    // 59 x 58 sprite
+    constructor(tile, id) {
+        super(tile, id, -tile._graphic.width/4, -tile._graphic.height/3);
+        this._movePath = [];
+        orbs[id] = this;
+    }
+
+    setGraphic(unitId) {
+        this._texture = PIXI.loader.resources["orb"].texture;
+        let rect = new PIXI.Rectangle(0,64,32,32);
+        this._texture.frame = rect;
+        this._graphic = new PIXI.Sprite(this._texture);
+
+        this._anim = setInterval(function() {
+            rect.x += 32;
+            if (rect.x >= 32 * 3) rect.x = 0;
+            orbs[unitId]._graphic.texture.frame = rect;
+        }, 50);
+
+        stage.addChild(this._graphic);
+    }
+
     pull(path) {
         this._movePath = path;
-        this._state = UnitStatus.PULLED;
+        this._state = Unit.Status.PULLED;
     }
 
     stopPull() {
         this._movePath = [];
-        this._state = UnitStatus.READY;
+        this._state = Unit.Status.READY;
     }
 
     cancelPull() {
@@ -404,10 +434,10 @@ class Orb {
     }
 
     score() {
-        this._scoreSound.play();
+        scoreSound.play();
         score += 1;
         this.resetPos();
-        this._state = UnitStatus.READY;
+        this._state = Unit.Status.READY;
         ScoreText.innerHTML = `Score: ${score}<br>High Score: ${highScore}`;
     }
 
@@ -416,7 +446,7 @@ class Orb {
             let at = this._lerp.update();
             this._graphic.position.x = at.x;
             this._graphic.position.y = at.y;
-        } else if (this._state === UnitStatus.PULLED) {
+        } else if (this._state === Unit.Status.PULLED) {
             if (this.hasReachedShip()) {
                 this.score();
             }
@@ -432,31 +462,20 @@ class Orb {
                 this._location = nextTile;
                 this._lerp.start(from, to, 1);
             } else {
-                this._state = UnitStatus.READY;
+                this._state = Unit.Status.READY;
             }
-
         }
-
     }
 }
 
-UnitStatus = {
-    MOVING: 50,
-    PULLING: 30,
-    PULLED: 25,
-    READY: 1
-};
-
-class Player {
+class Player extends Unit {
     constructor(tile) {
+        super(tile, null, -tile._graphic.width/4, -tile._graphic.height/3);
         this._isPulling = false;
-        this._lerp = new SpriteLerp();
-        this._texture = PIXI.loader.resources["player"].texture;
-        this._state = UnitStatus.READY;
-        this._offsetX = -tile._graphic.width/4;
-        this._offsetY = -tile._graphic.height/3;
-        this._playerName = null;
+    }
 
+    setGraphic(img) {
+        this._texture = PIXI.loader.resources["player"].texture;
         let rect = new PIXI.Rectangle(0,96,32,32);
         this._texture.frame = rect;
         this._graphic = new PIXI.Sprite(this._texture);
@@ -469,7 +488,6 @@ class Player {
 
         this.drawName();
         stage.addChild(this._graphic);
-        this.setPos(tile);
     }
 
     setPos(tile) {
@@ -503,36 +521,51 @@ class Player {
     }
 
     pull(obj) {
-        console.log("Pulling object:");
-        console.log(obj);
+        if (this._state === Unit.Status.MOVING || this._lerp._active)
+            return;
+        if (this._state === Unit.Status.PULLING)
+            this.cancelPull();
+
+        let fromTile = obj._location;
+        let toTile = this._location;
+        let tilePath = fromTile.linedraw(toTile);
+
+        // Ignoring the start and end points, is there a path?
+        if (tilePath.length - 2 <= 0)
+            return;
+
+        let hexdir = tilePath[tilePath.length - 2].subtract(tilePath[tilePath.length - 1]);
+        let dir = Hex.directionsInverted[`${hexdir.q},${hexdir.r},${hexdir.s}`];
+        this.turn(dir);
+
+        obj.pull(tilePath.slice(1,-1));
         this._isPulling = obj;
-        this.changeState(UnitStatus.PULLING);
+        this.changeState(Unit.Status.PULLING);
     }
 
     cancelPull() {
-        console.log("Cancel pull...");
         this._isPulling.cancelPull();
-        this.changeState(UnitStatus.READY);
+        this.changeState(Unit.Status.READY);
     }
 
     changeState(state) {
         switch(state) {
-            case UnitStatus.MOVING:
+            case Unit.Status.MOVING:
                 console.log("Player is moving...");
                 this._texture = PIXI.loader.resources["player-move"].texture;
                 break;
-            case UnitStatus.PULLING:
+            case Unit.Status.PULLING:
                 console.log("Player is pulling...");
                 this._texture = PIXI.loader.resources["player-pull"].texture;
                 break;
-            case UnitStatus.READY:
+            case Unit.Status.READY:
                 console.log("Player is idle.");
                 this._texture = PIXI.loader.resources["player"].texture;
                 break;
             default:
                 console.error(`ERROR: ${state.toString()} is not a valid state. Using READY state.`);
                 this._texture = PIXI.loader.resources["player"].texture;
-                state = UnitStatus.READY;
+                state = Unit.Status.READY;
         }
         stage.removeChild(this._graphic);
         this._graphic = new PIXI.Sprite(this._texture);
@@ -548,22 +581,22 @@ class Player {
         this._playerName = new PIXI.Text(PLAYER_NAME, {font: "24px Arial", fill: "yellow", align: "center"});
         this._playerName.anchor.set(0.5);
         this._graphic.addChild(this._playerName);
-    }
+    };
 
     animate() {
-        if (this._state === UnitStatus.MOVING) {
+        if (this._state === Unit.Status.MOVING) {
             if (this._lerp._active) {
                 let at = this._lerp.update();
                 this._graphic.position.x = at.x;
                 this._graphic.position.y = at.y;
             } else {
-                this.changeState(UnitStatus.READY);
+                this.changeState(Unit.Status.READY);
             }
-        } else if (this._state === UnitStatus.PULLING) {
+        } else if (this._state === Unit.Status.PULLING) {
             if (typeof this._isPulling === 'undefined' ||
                 this._isPulling.hasOwnProperty('_state') &&
-                this._isPulling._state !== UnitStatus.PULLED)
-                this.changeState(UnitStatus.READY);
+                this._isPulling._state !== Unit.Status.PULLED)
+                this.changeState(Unit.Status.READY);
         }
 
     }
@@ -678,7 +711,7 @@ window.addEventListener("keydown", function(event) {
 
 function userInput(key) {
     if (['q','a','w','s','e','d'].includes(key)) {
-        board.move(player, key, 1);
+        player.move(key, 1);
     }
 }
 
@@ -690,7 +723,7 @@ function updatePointer() {
             pointer.cursor = "pointer";
             hoverObject = true;
             if (pointer.isDown) {
-                board.pull(player, orbs[o]);
+                player.pull(orbs[o]);
             }
         }
     }
