@@ -6,7 +6,8 @@ const SCREEN_WIDTH = 640;
 const BOARD_SIZE = 15;
 const GAME_TICK = 500;
 const PLAYER_START_POS = [2,-1,-1];
-const DEBUG = false;
+let DEBUG = false;
+let MOUSE_MOVEMENT = true;
 
 const GAME_LENGTH = 90;
 let TimerInterval;
@@ -22,7 +23,6 @@ const NameInputBox = document.getElementById("playerName");
 let PLAYER_NAME = `Player ${Math.floor(Math.random() * 99) + 1}`;
 
 let stage = new PIXI.Container();
-let mouseMovement = false;
 
 let player;
 let ship;
@@ -30,6 +30,7 @@ let board;
 let orbs = {};
 let score = 0;
 let highScore = 0;
+let clickDelay = 0.0;
 
 let renderer = PIXI.autoDetectRenderer({height: SCREEN_HEIGHT, width: SCREEN_WIDTH, transparent: true, resolution: 1});
 document.getElementById('display').appendChild(renderer.view);
@@ -135,6 +136,9 @@ class Hex {
         }
         return results;
     }
+    asDir() {
+        return Hex.directionsInverted[`${this.q},${this.r},${this.s}`]
+    }
 }
 Hex.directions = {
     'e': new Hex(1, 0, -1),
@@ -159,16 +163,24 @@ Hex.diagonals = {
 };
 
 class Tile extends Hex {
-    constructor(x,y,z, offsetX, offsetY) {
+    constructor(x = 0,y = 0,z = 0) {
         super(x,y,z);
         this.x = x;
         this.y = y;
         this.z = z;
+        this.neighbors = {};
         this._graphic = new PIXI.Sprite(
             PIXI.loader.resources["../img/hextile.png"].texture
         );
         this._passable = true;
-        this.draw(stage, offsetX, offsetY)
+        this.pathTraversalTime = 1;
+        this.draw(stage);
+    }
+    hasNeighbor(tile) {
+        return Object.values(this.neighbors).some((neighborTile) => neighborTile.equals(tile));
+    }
+    addNeighbor(direction, tile) {
+        this.neighbors[direction] = tile;
     }
     getCoords() {
         return `${this.coords[0]},${this.coords[1]},${this.coords[2]}`;
@@ -176,7 +188,10 @@ class Tile extends Hex {
     getPixelCoords() {
         return new Point(this._graphic.x, this._graphic.y);
     }
-    draw(stage, dx, dy) {
+    draw(stage) {
+        let dx = 0, dy = 0;
+        dx += (this.x * 0.75);
+        dy += (this.x * 0.5 + this.z);
         this._graphic.anchor.set(0.5, 0.5);
         this._graphic.scale.set(0.4, 0.4);
         stage.addChild(this._graphic);
@@ -189,21 +204,20 @@ class Tile extends Hex {
             this._graphic.addChild(coordsText);
         }
     }
-    neighbor(direction) {
-        return super.neighbor(direction).subtract(this);
+    getNeighbor(direction) {
+        return this.neighbors[direction];
     }
-
+    toHex() {
+        return new Hex(this.x,this.y,this.z);
+    }
     linedraw(b) {
         const hexPath = super.linedraw(b);
-        let tilePath = [this];
-        for (let h in hexPath) {
-            const toHex = hexPath[h];
-            const fromTile = tilePath[-1];
-            const dir = toHex.subtract(tilePath[-1]);
-            const toTile = fromTile.neighbor(dir);
-            tilePath.push(toTile);
+        let dirPath = [];
+        for (let from = 0, to = 1; to < hexPath.length; from++, to++) {
+            const dir = hexPath[to].subtract(hexPath[from]).asDir();
+            dirPath.push(dir);
         }
-        return tilePath;
+        return dirPath;
     }
 }
 
@@ -212,65 +226,56 @@ class Board {
         return this._tilemap[`${x},${y},${z}`];
     }
 
-    constructor(size) {
-        this._boardSize = size;
+    findTileByPos(pixelX, pixelY) {
+        pixelX -= stage.position.x - player._location._graphic.position.x;
+        pixelY -= stage.position.y - player._location._graphic.position.y;
+        const tile = this.getTile(0,0,0);
+        const tileWidth = tile._graphic.width;
+        const tileHeight = tile._graphic.height;
+
+        const dx = pixelX / tileWidth;
+        const dy = pixelY / tileHeight;
+
+        // Converting to cube coordinates
+        const cubeX = Math.round(dx / 0.75);
+        const cubeZ = Math.round(dy - (cubeX * 0.5));
+        const cubeY = -(cubeX + cubeZ);
+
+        return this.getTile(cubeX, cubeY, cubeZ);
+    }
+
+    constructor(testContainsTile) {
+        this._test = testContainsTile;
         this._tilemap = {};
 
-        let tile = new Tile(0,0,0, 0, 0);
+        let tile = new Tile(0,0,0);
         this._tilemap[tile.getCoords()] = tile;
+        this._keys = [tile.getCoords()];
 
-        for (let spiral = 1; spiral <= this._boardSize; spiral++) {
-            let dx = 0;
-            let dy = -1 * spiral;
-
-            // Starts at x = 0, y = n, z = -n
-            let x = 0;
-            let y = spiral;
-            let z = -1 * spiral;
-            tile = new Tile(x, y, z, dx, dy);
-            this._tilemap[tile.getCoords()] = tile;
-
-            // As y decreases to 0, x increases to n
-            for (; x < spiral; x++, y--, dx+=0.75, dy+=0.5) {
-                tile = new Tile(x, y, z, dx, dy);
-                this._tilemap[tile.getCoords()] = tile;
-            }
-
-            // As z increases to 0, y decreases to -n
-            for (; y > -1 * spiral; z++, y--, dy+=1) {
-                tile = new Tile(x, y, z, dx, dy);
-                this._tilemap[tile.getCoords()] = tile;
-            }
-
-            // As x decreases to 0, z increases to n
-            for (; z < spiral; z++, x--, dx-=0.75, dy +=0.5) {
-                tile = new Tile(x, y, z, dx, dy);
-                this._tilemap[tile.getCoords()] = tile;
-            }
-
-            // As y increases to 0, x decreases to -n
-            for (; y < 0; y++, x--, dx-=0.75, dy -=0.5) {
-                tile = new Tile(x, y, z, dx, dy);
-                this._tilemap[tile.getCoords()] = tile;
-            }
-
-            // As z decreases to 0, y increases to n
-            for (; y < spiral; y++, z--, dy-=1) {
-                tile = new Tile(x, y, z, dx, dy);
-                this._tilemap[tile.getCoords()] = tile;
-            }
-
-            // As x increases to 0, z decreases to -n
-            for (; x < 0; x++, z--, dx+=0.75, dy-=0.5) {
-                tile = new Tile(x, y, z, dx, dy);
-                this._tilemap[tile.getCoords()] = tile;
+        for (let i = 0; i < this._keys.length; i++) {
+            tile = this._tilemap[this._keys[i]];
+            for (let dir in Hex.directions) {
+                const nHex = tile.neighbor(dir);
+                const hexCoords = `${nHex.q},${nHex.r},${nHex.s}`;
+                if (this._test(nHex, BOARD_SIZE)) {
+                   if (hexCoords in this._tilemap) {
+                       if (!tile.hasNeighbor(this._tilemap[hexCoords]))
+                           tile.addNeighbor(dir, this._tilemap[hexCoords]);
+                   }
+                   else {
+                       const nTile = new Tile(nHex.q, nHex.r, nHex.s);
+                       tile.addNeighbor(dir, nTile);
+                       this._tilemap[hexCoords] = nTile;
+                       this._keys.push(hexCoords);
+                   }
+               }
             }
         }
     }
 }
 
 class Ship {
-    constructor(tile, board) {
+    constructor(tile) {
         this._graphic = new PIXI.Sprite(PIXI.loader.resources["ship"].texture);
         this._offsetX = 0;
         this._offsetY = 0;
@@ -282,19 +287,27 @@ class Ship {
         this._center = tile;
         stage.addChild(this._graphic);
 
-        this.storeTilesUnderShip(board, this._center, this._shipRadius);
+        this.storeTilesUnderShip(this._center, this._shipRadius);
 
         for (let t in this._tiles)
             this._tiles[t]._passable = false;
     }
 
-    storeTilesUnderShip(b, tile, radius) {
-        if (!this.isOnTile(tile))
-            this._tiles.push(tile);
-        if (radius > 0) {
-            for (let key in Hex.directions) {
-                let dest = tile.neighbor(key);
-                this.storeTilesUnderShip(b, dest, radius - 1);
+    // calcShipTileSize() {
+    //     let size = 1;
+    //     for (let r = 1; r <= this._shipRadius; r++) size += r * 6;
+    //     return size;
+    // }
+
+    storeTilesUnderShip() {
+        const size = 1 + 3 * (this._shipRadius**2 + this._shipRadius); // See calcShipTileSize function
+        for (let t in board._tilemap) {
+            const tile = board._tilemap[t];
+            if (Math.max(Math.abs(tile.x + this._center.x),
+                        Math.abs(tile.y + this._center.y),
+                        Math.abs(tile.z + this._center.z)) <= this._shipRadius) {
+                this._tiles.push(tile);
+                if (this._tiles.length === size) return;
             }
         }
     }
@@ -305,14 +318,15 @@ class Ship {
 }
 
 class Unit {
-    constructor(tile, id, offsetX, offsetY) {
+    constructor(tile, id) {
         this._lerp = new SpriteLerp();
         this._location = tile;
         this._state = Unit.Status.READY;
-        this._offsetX = offsetX;
-        this._offsetY = offsetY;
+        this._offsetX = -tile._graphic.width/4;
+        this._offsetY = -tile._graphic.height/3;
         this._texture = null;
         this._graphic = null;
+        this._movePath = [];
         this.setGraphic(id);
         this.setPos(tile);
     }
@@ -338,7 +352,7 @@ class Unit {
             this.cancelPull();
 
         let onTile = this._location;
-        let neighbor = onTile.neighbor(direction);
+        let neighbor = onTile.getNeighbor(direction);
         if (neighbor._passable === false) {
             return;
         }
@@ -367,6 +381,17 @@ class Unit {
             this.changeState(Unit.Status.READY);
         }
     }
+
+    lerpToTile(tile) {
+        if (this._lerp._active) return;
+
+        let from = new Point(this._graphic.x, this._graphic.y);
+        let to = tile.getPixelCoords();
+        to.x += this._offsetX;
+        to.y += this._offsetY;
+        this._location = tile;
+        this._lerp.start(from, to, 1);
+    }
 }
 
 Unit.Status = {
@@ -379,8 +404,7 @@ Unit.Status = {
 class Orb extends Unit {
     // 59 x 58 sprite
     constructor(tile, id) {
-        super(tile, id, -tile._graphic.width/4, -tile._graphic.height/3);
-        this._movePath = [];
+        super(tile, id);
         orbs[id] = this;
     }
 
@@ -389,6 +413,7 @@ class Orb extends Unit {
         let rect = new PIXI.Rectangle(0,64,32,32);
         this._texture.frame = rect;
         this._graphic = new PIXI.Sprite(this._texture);
+        this._graphic.scale.set(1.5,1.5);
 
         this._anim = setInterval(function() {
             rect.x += 32;
@@ -451,16 +476,12 @@ class Orb extends Unit {
                 this.score();
             }
             else if (this._movePath.length > 0) {
-                let nextTile = this._movePath.shift();
+                const nextDir = this._movePath.shift();
+                const nextTile = this._location.getNeighbor(nextDir);
 
                 if (Orb.pathIsImpassable(nextTile)) this.stopPull();
 
-                let from = new Point(this._graphic.x, this._graphic.y);
-                let to = nextTile.getPixelCoords();
-                to.x += this._offsetX;
-                to.y += this._offsetY;
-                this._location = nextTile;
-                this._lerp.start(from, to, 1);
+                this.lerpToTile(nextTile);
             } else {
                 this._state = Unit.Status.READY;
             }
@@ -470,8 +491,14 @@ class Orb extends Unit {
 
 class Player extends Unit {
     constructor(tile) {
-        super(tile, null, -tile._graphic.width/4, -tile._graphic.height/3);
+        super(tile, null);
         this._isPulling = false;
+    }
+
+    moveTo(tile) {
+        console.log(`Player move to ${tile.getCoords()}`);
+        this._movePath = FindTilePath(this._location, tile);
+        this.changeState(Unit.Status.MOVING);
     }
 
     setGraphic(img) {
@@ -488,13 +515,6 @@ class Player extends Unit {
 
         this.drawName();
         stage.addChild(this._graphic);
-    }
-
-    setPos(tile) {
-        this._graphic.position.copyFrom(tile._graphic.position);
-        this._graphic.position.x += this._offsetX;
-        this._graphic.position.y += this._offsetY;
-        this._location = tile;
     }
 
     turn(direction) {
@@ -522,7 +542,7 @@ class Player extends Unit {
 
     pull(obj) {
         if (this._state === Unit.Status.MOVING || this._lerp._active)
-            return;
+            this._movePath = [];
         if (this._state === Unit.Status.PULLING)
             this.cancelPull();
 
@@ -530,15 +550,27 @@ class Player extends Unit {
         let toTile = this._location;
         let tilePath = fromTile.linedraw(toTile);
 
-        // Ignoring the start and end points, is there a path?
-        if (tilePath.length - 2 <= 0)
+        if (tilePath.length <= 0)
             return;
 
-        let hexdir = tilePath[tilePath.length - 2].subtract(tilePath[tilePath.length - 1]);
-        let dir = Hex.directionsInverted[`${hexdir.q},${hexdir.r},${hexdir.s}`];
+        let dir = tilePath[0];
+        switch (dir) {
+            case 'w':
+                dir = 's'; break;
+            case 's':
+                dir = 'w'; break;
+            case 'e':
+                dir = 'a'; break;
+            case 'a':
+                dir = 'e'; break;
+            case 'q':
+                dir = 'd'; break;
+            case 'd':
+                dir = 'q'; break;
+        }
         this.turn(dir);
 
-        obj.pull(tilePath.slice(1,-1));
+        obj.pull(tilePath.slice(0,-1));
         this._isPulling = obj;
         this.changeState(Unit.Status.PULLING);
     }
@@ -589,6 +621,11 @@ class Player extends Unit {
                 let at = this._lerp.update();
                 this._graphic.position.x = at.x;
                 this._graphic.position.y = at.y;
+            } else if (this._movePath.length > 0) {
+                const nextTile = this._movePath.shift();
+                const dir = nextTile.subtract(this._location).asDir();
+                this.turn(dir);
+                this.lerpToTile(nextTile);
             } else {
                 this.changeState(Unit.Status.READY);
             }
@@ -636,6 +673,93 @@ class SpriteLerp {
     }
 }
 
+FindTilePath = (startTile, endTile) => {
+    if (endTile._passable === false ||
+        startTile.equals(endTile))
+        return [];
+
+    let frontier = new PriorityQueue();
+    frontier.put(endTile, 0);
+    let goingTo = new Map();
+    goingTo.set(endTile, null);
+    let costSoFar = new Map();
+    costSoFar.set(endTile, 0);
+    let current;
+
+    while (!frontier.isEmpty()) {
+        current = frontier.get();
+        if (current.equals(startTile)) {
+            let movePath = [];
+            do {
+                current = goingTo.get(current);
+                movePath.push(current);
+            } while (goingTo.get(current) !== null);
+            return movePath;
+        }
+        for (let p in current.neighbors) {
+            const previous = current.neighbors[p];
+            if (previous._passable === false) continue;
+            const newCost = costSoFar.get(current) + previous.pathTraversalTime;
+            if (costSoFar.has(previous) === false || newCost < costSoFar.get(previous)) {
+                costSoFar.set(previous, newCost);
+                const priority = newCost + startTile.distance(previous);
+                frontier.put(previous, priority);
+                goingTo.set(previous, current);
+            }
+        }
+    }
+    return [];
+};
+
+class QElement {
+    constructor(element, priority) {
+        this.element = element;
+        this.priority = priority;
+    }
+}
+
+class PriorityQueue {
+    constructor() {
+        this.items = [];
+    }
+
+    put(element, priority) {
+        let qElement = new QElement(element, priority);
+        let contain = false;
+
+        for (let i = 0; i < this.items.length; i++) {
+            if (this.items[i].priority > qElement.priority) {
+                this.items.splice(i, 0, qElement);
+                contain = true;
+                break;
+            }
+        }
+
+        if (!contain) this.items.push(qElement);
+    }
+
+    get() {
+        if (this.isEmpty()) return null;
+        const cur = this.items.shift();
+        return cur.element;
+    }
+
+    peek() {
+        if (this.isEmpty()) return null;
+        return this.items[0];
+    }
+
+    isEmpty() {
+        return this.items.length === 0;
+    }
+}
+
+SimpleBoardLayout = (testTile, boardSize) => {
+    return Math.max(Math.abs(testTile.q),
+        Math.abs(testTile.r),
+        Math.abs(testTile.s)) <= boardSize;
+};
+
 /*** Main Function Here vvvv
  *
  *
@@ -649,12 +773,12 @@ function setup() {
     stage.position.x = renderer.width/2;
     stage.position.y = renderer.height/2;
 
-    board = new Board(BOARD_SIZE);
+    board = new Board(SimpleBoardLayout);
     let t = board.getTile(PLAYER_START_POS[0],PLAYER_START_POS[1],PLAYER_START_POS[2]);
     player = new Player(t);
 
     t = board.getTile(0,0,0);
-    ship = new Ship(t, board);
+    ship = new Ship(t);
 
     generateOrbs(5);
 
@@ -697,7 +821,20 @@ function animationLoop() {
 
     stage.pivot.copyFrom(player._graphic.position);
 
-    updatePointer();
+    if (MOUSE_MOVEMENT) {
+        if (updatePointer() === "onTile") {
+            if (clickDelay === 0) {
+                player.moveTo(board.findTileByPos(pointer.x, pointer.y));
+                clickDelay = Date.now() + GAME_TICK;
+            }
+        }
+        if (clickDelay > 0 && clickDelay < Date.now()) {
+            clickDelay = 0;
+        }
+    } else {
+        updatePointer();
+    }
+
 
     renderer.render(stage);
 }
@@ -717,18 +854,21 @@ function userInput(key) {
 
 function updatePointer() {
     let hoverObject = false;
+    let action = null;
     for (let o in orbs) {
         if (!orbs.hasOwnProperty(o)) continue;
         if (pointer.hitTestSprite(orbs[o]._graphic)) {
             pointer.cursor = "pointer";
             hoverObject = true;
             if (pointer.isDown) {
+                action = "onOrb";
                 player.pull(orbs[o]);
             }
         }
     }
     if (!hoverObject)
         pointer.cursor = "auto";
+    return (action !== "onOrb" && pointer.isDown) ? "onTile" : action;
 }
 
 function updateName(e) {
