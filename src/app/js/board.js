@@ -405,6 +405,8 @@ class Orb extends Unit {
     // 59 x 58 sprite
     constructor(tile, id) {
         super(tile, id);
+        super._offsetX = -tile._graphic.width/3;
+        this.setPos(tile);
         orbs[id] = this;
     }
 
@@ -496,7 +498,9 @@ class Player extends Unit {
     }
 
     moveTo(tile) {
-        console.log(`Player move to ${tile.getCoords()}`);
+        if (this._state === Unit.Status.PULLING)
+            this.cancelPull();
+
         this._movePath = FindTilePath(this._location, tile);
         this.changeState(Unit.Status.MOVING);
     }
@@ -541,8 +545,12 @@ class Player extends Unit {
     }
 
     pull(obj) {
-        if (this._state === Unit.Status.MOVING || this._lerp._active)
+        if (this._state === Unit.Status.MOVING) {
             this._movePath = [];
+            clickDelay = Date.now() + GAME_TICK;
+        }
+        if (this._lerp.active)
+            return;
         if (this._state === Unit.Status.PULLING)
             this.cancelPull();
 
